@@ -152,7 +152,9 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
   }
 
   const data = await ff.readFile(outputName);
-  const blob = new Blob([data as Uint8Array], { type: "video/mp4" });
+  const u8 = data as Uint8Array;
+  const buf = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+  const blob = new Blob([buf], { type: "video/mp4" });
 
   // Cleanup
   try { await ff.deleteFile(inputName); } catch {}
