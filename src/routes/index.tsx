@@ -24,10 +24,10 @@ export const Route = createFileRoute("/")({
         content:
           "Aplique um único template em centenas de vídeos. Processamento 100% local no navegador, sem upload.",
       },
-      { property: "og:title", content: "VBatch — Edição em massa de vídeos" },
+      { property: "og:title", content: "VBatch — Edição em massa de vídeos com template" },
       {
         property: "og:description",
-        content: "Logo, texto, marca d'água em lote. Tudo local, nada vai pra nuvem.",
+        content: "Aplique um único template em centenas de vídeos. Processamento 100% local no navegador, sem upload.",
       },
     ],
   }),

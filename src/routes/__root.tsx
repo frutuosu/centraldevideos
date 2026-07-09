@@ -77,14 +77,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "VBatch — Edição em massa de vídeos com template" },
+      { name: "description", content: "Aplique um único template em centenas de vídeos. Processamento 100% local no navegador, sem upload." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "VBatch — Edição em massa de vídeos com template" },
+      { property: "og:description", content: "Aplique um único template em centenas de vídeos. Processamento 100% local no navegador, sem upload." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "VBatch — Edição em massa de vídeos com template" },
+      { name: "twitter:description", content: "Aplique um único template em centenas de vídeos. Processamento 100% local no navegador, sem upload." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/16558d8c-07a3-431e-80c6-2e7e8ab3e7b0/id-preview-9f0ec849--899b7ddd-ae38-483e-b784-b7c5824bc09e.lovable.app-1781086820286.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/16558d8c-07a3-431e-80c6-2e7e8ab3e7b0/id-preview-9f0ec849--899b7ddd-ae38-483e-b784-b7c5824bc09e.lovable.app-1781086820286.png" },
     ],
     links: [
       {
