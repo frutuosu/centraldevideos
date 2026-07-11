@@ -11,6 +11,7 @@ const WASM_ASSET_MANIFEST_URL = "/ffmpeg/ffmpeg-core.wasm.asset.json";
 const REMOTE_CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
 const EXEC_TIMEOUT_MS = 120_000;
 const LOAD_FALLBACK_MS = 20_000;
+const PREFER_NATIVE_RENDERER = true;
 
 // Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
 const recentLogs: string[] = [];
@@ -113,6 +114,8 @@ export interface ProcessOptions {
 }
 
 export async function processVideo(file: File, opts: ProcessOptions): Promise<Blob> {
+  if (PREFER_NATIVE_RENDERER) return renderVideoInBrowser(file, opts);
+
   let ff: FFmpeg;
   try {
     ff = await withTimeout(getFFmpeg(), LOAD_FALLBACK_MS, "FFmpeg demorou para carregar");
