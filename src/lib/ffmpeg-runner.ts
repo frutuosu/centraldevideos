@@ -1,5 +1,6 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { renderVideoInBrowser } from "./browser-video-renderer";
 import type { LogoOverlay, Overlay, QualityPreset, TextOverlay } from "./types";
 
 let ffmpegInstance: FFmpeg | null = null;
@@ -9,6 +10,7 @@ const LOCAL_CORE_URL = "/ffmpeg/ffmpeg-core.js";
 const WASM_ASSET_MANIFEST_URL = "/ffmpeg/ffmpeg-core.wasm.asset.json";
 const REMOTE_CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
 const EXEC_TIMEOUT_MS = 120_000;
+const LOAD_FALLBACK_MS = 20_000;
 
 // Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
 const recentLogs: string[] = [];
@@ -111,7 +113,14 @@ export interface ProcessOptions {
 }
 
 export async function processVideo(file: File, opts: ProcessOptions): Promise<Blob> {
-  const ff = await getFFmpeg();
+  let ff: FFmpeg;
+  try {
+    ff = await withTimeout(getFFmpeg(), LOAD_FALLBACK_MS, "FFmpeg demorou para carregar");
+  } catch (err) {
+    console.warn("[ffmpeg] using native browser renderer:", err);
+    resetFFmpeg();
+    return renderVideoInBrowser(file, opts);
+  }
   recentLogs.length = 0;
 
   const safeExt = (file.name.split(".").pop() || "mp4").replace(/[^\w]/g, "").slice(0, 5) || "mp4";
@@ -260,6 +269,22 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
       try { await ff.deleteFile(name); } catch {}
     }
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timeout);
+        reject(err);
+      },
+    );
+  });
 }
 
 function resetFFmpeg(): void {
