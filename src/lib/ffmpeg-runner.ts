@@ -8,7 +8,6 @@ let loadingPromise: Promise<FFmpeg> | null = null;
 const LOCAL_CORE_URL = "/ffmpeg/ffmpeg-core.js";
 const WASM_ASSET_MANIFEST_URL = "/ffmpeg/ffmpeg-core.wasm.asset.json";
 const REMOTE_CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-const LOAD_TIMEOUT_MS = 45_000;
 const EXEC_TIMEOUT_MS = 120_000;
 
 // Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
@@ -46,36 +45,27 @@ export async function getFFmpeg(): Promise<FFmpeg> {
 }
 
 async function loadCore(ff: FFmpeg): Promise<void> {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
   try {
-    await ff.load(
-      {
-        coreURL: await toBlobURL(LOCAL_CORE_URL, "text/javascript"),
-        wasmURL: await getLocalWasmURL(),
-      },
-      { signal: controller.signal }
-    );
+    await ff.load({
+      coreURL: await toBlobURL(LOCAL_CORE_URL, "text/javascript"),
+      wasmURL: await getLocalWasmURL(),
+    });
   } catch (err) {
     console.warn("[ffmpeg] local core failed, falling back to CDN:", err);
-    await ff.load(
-      {
-        coreURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-      },
-      { signal: controller.signal }
-    );
-  } finally {
-    window.clearTimeout(timeout);
+    ff.terminate();
+    const fallback = new FFmpeg();
+    fallback.on("log", ({ message }) => {
+      recentLogs.push(message);
+      if (recentLogs.length > MAX_LOGS) recentLogs.shift();
+    });
+    await fallback.load({
+      coreURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+    });
   }
 }
 
 function normalizeLoadError(err: unknown): Error {
-  if (err instanceof DOMException && err.name === "AbortError") {
-    return new Error(
-      "O FFmpeg demorou demais para carregar. Recarregue a página e tente novamente; se persistir, use Chrome/Edge e um vídeo menor."
-    );
-  }
   if (err instanceof Error) return err;
   return new Error("Falha ao carregar o motor de vídeo FFmpeg.");
 }
