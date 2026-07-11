@@ -24,16 +24,16 @@ export async function getFFmpeg(): Promise<FFmpeg> {
       recentLogs.push(message);
       if (recentLogs.length > MAX_LOGS) recentLogs.shift();
     });
-    await loadCore(ff);
+    const loaded = await loadCore(ff);
     // Preload font for drawtext (optional — text overlays only fail if this fails)
     try {
       const fontData = await fetchFile("/fonts/Inter.ttf");
-      await ff.writeFile("inter.ttf", fontData);
+      await loaded.writeFile("inter.ttf", fontData);
     } catch (err) {
       console.warn("[ffmpeg] failed to preload font:", err);
     }
-    ffmpegInstance = ff;
-    return ff;
+    ffmpegInstance = loaded;
+    return loaded;
   })().catch((err) => {
     ffmpegInstance?.terminate();
     ffmpegInstance = null;
@@ -44,12 +44,13 @@ export async function getFFmpeg(): Promise<FFmpeg> {
   return loadingPromise;
 }
 
-async function loadCore(ff: FFmpeg): Promise<void> {
+async function loadCore(ff: FFmpeg): Promise<FFmpeg> {
   try {
     await ff.load({
       coreURL: await toBlobURL(LOCAL_CORE_URL, "text/javascript"),
       wasmURL: await getLocalWasmURL(),
     });
+    return ff;
   } catch (err) {
     console.warn("[ffmpeg] local core failed, falling back to CDN:", err);
     ff.terminate();
@@ -62,6 +63,7 @@ async function loadCore(ff: FFmpeg): Promise<void> {
       coreURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
       wasmURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
     });
+    return fallback;
   }
 }
 
