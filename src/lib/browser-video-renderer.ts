@@ -25,7 +25,10 @@ export async function renderVideoInBrowser(file: File, opts: RenderOptions): Pro
   video.src = sourceUrl;
   video.preload = "auto";
   video.playsInline = true;
+  video.muted = true;
   video.crossOrigin = "anonymous";
+  video.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;";
+  document.body.appendChild(video);
 
   try {
     await waitForMetadata(video);
@@ -64,6 +67,7 @@ export async function renderVideoInBrowser(file: File, opts: RenderOptions): Pro
     return blob;
   } finally {
     video.pause();
+    video.remove();
     video.removeAttribute("src");
     video.load();
     URL.revokeObjectURL(sourceUrl);
@@ -147,12 +151,7 @@ function seek(video: HTMLVideoElement, time: number): Promise<void> {
 }
 
 async function playVideo(video: HTMLVideoElement): Promise<void> {
-  try {
-    await video.play();
-  } catch {
-    video.muted = true;
-    await video.play();
-  }
+  await video.play();
 }
 
 function drawUntilEnded(
