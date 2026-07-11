@@ -5,7 +5,10 @@ import type { LogoOverlay, Overlay, QualityPreset, TextOverlay } from "./types";
 let ffmpegInstance: FFmpeg | null = null;
 let loadingPromise: Promise<FFmpeg> | null = null;
 
-const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+const LOCAL_CORE_URL = "/ffmpeg/ffmpeg-core.js";
+const WASM_ASSET_MANIFEST_URL = "/ffmpeg/ffmpeg-core.wasm.asset.json";
+const REMOTE_CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+const LOAD_TIMEOUT_MS = 45_000;
 
 // Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
 const recentLogs: string[] = [];
@@ -21,10 +24,7 @@ export async function getFFmpeg(): Promise<FFmpeg> {
       recentLogs.push(message);
       if (recentLogs.length > MAX_LOGS) recentLogs.shift();
     });
-    await ff.load({
-      coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-    });
+    await loadCore(ff);
     // Preload font for drawtext (optional — text overlays only fail if this fails)
     try {
       const fontData = await fetchFile("/fonts/Inter.ttf");
@@ -37,6 +37,39 @@ export async function getFFmpeg(): Promise<FFmpeg> {
   })();
 
   return loadingPromise;
+}
+
+async function loadCore(ff: FFmpeg): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), LOAD_TIMEOUT_MS);
+  try {
+    await ff.load(
+      {
+        coreURL: await toBlobURL(LOCAL_CORE_URL, "text/javascript"),
+        wasmURL: await getLocalWasmURL(),
+      },
+      { signal: controller.signal }
+    );
+  } catch (err) {
+    console.warn("[ffmpeg] local core failed, falling back to CDN:", err);
+    await ff.load(
+      {
+        coreURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
+        wasmURL: await toBlobURL(`${REMOTE_CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+      },
+      { signal: controller.signal }
+    );
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function getLocalWasmURL(): Promise<string> {
+  const response = await fetch(WASM_ASSET_MANIFEST_URL);
+  if (!response.ok) throw new Error("Manifesto local do FFmpeg não encontrado");
+  const manifest = (await response.json()) as { url?: string };
+  if (!manifest.url) throw new Error("Manifesto local do FFmpeg sem URL do Wasm");
+  return manifest.url;
 }
 
 /** Escape text for drawtext filter */
