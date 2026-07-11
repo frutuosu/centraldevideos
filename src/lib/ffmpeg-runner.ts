@@ -7,20 +7,31 @@ let loadingPromise: Promise<FFmpeg> | null = null;
 
 const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
 
-export async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> {
+// Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
+const recentLogs: string[] = [];
+const MAX_LOGS = 60;
+
+export async function getFFmpeg(): Promise<FFmpeg> {
   if (ffmpegInstance) return ffmpegInstance;
   if (loadingPromise) return loadingPromise;
 
   loadingPromise = (async () => {
     const ff = new FFmpeg();
-    if (onLog) ff.on("log", ({ message }) => onLog(message));
+    ff.on("log", ({ message }) => {
+      recentLogs.push(message);
+      if (recentLogs.length > MAX_LOGS) recentLogs.shift();
+    });
     await ff.load({
       coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
       wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
     });
-    // Preload Inter font for drawtext
-    const fontData = await fetchFile("/fonts/Inter.ttf");
-    await ff.writeFile("inter.ttf", fontData);
+    // Preload font for drawtext (optional — text overlays only fail if this fails)
+    try {
+      const fontData = await fetchFile("/fonts/Inter.ttf");
+      await ff.writeFile("inter.ttf", fontData);
+    } catch (err) {
+      console.warn("[ffmpeg] failed to preload font:", err);
+    }
     ffmpegInstance = ff;
     return ff;
   })();
@@ -32,13 +43,13 @@ export async function getFFmpeg(onLog?: (msg: string) => void): Promise<FFmpeg> 
 function escapeDrawtext(t: string): string {
   return t
     .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
     .replace(/'/g, "\u2019")
+    .replace(/:/g, "\\:")
     .replace(/%/g, "\\%");
 }
 
 function hexToFfmpegColor(hex: string, opacity: number): string {
-  const clean = hex.replace("#", "");
+  const clean = (hex || "#ffffff").replace("#", "");
   return `0x${clean}@${opacity.toFixed(2)}`;
 }
 
@@ -60,74 +71,93 @@ export interface ProcessOptions {
 
 export async function processVideo(file: File, opts: ProcessOptions): Promise<Blob> {
   const ff = await getFFmpeg();
-  const inputName = `in_${Date.now()}.${(file.name.split(".").pop() || "mp4").replace(/[^\w]/g, "")}`;
-  const outputName = `out_${Date.now()}.mp4`;
+
+  const safeExt = (file.name.split(".").pop() || "mp4").replace(/[^\w]/g, "").slice(0, 5) || "mp4";
+  const stamp = Date.now() + "_" + Math.floor(Math.random() * 1e6);
+  const inputName = `in_${stamp}.${safeExt}`;
+  const outputName = `out_${stamp}.mp4`;
 
   await ff.writeFile(inputName, await fetchFile(file));
 
-  const inputs: string[] = ["-i", inputName];
-  const logos = opts.overlays.filter((o): o is LogoOverlay => o.type === "logo");
-  const texts = opts.overlays.filter((o): o is TextOverlay => o.type === "text");
+  const logos = opts.overlays.filter((o): o is LogoOverlay => o.type === "logo" && !!o.src);
+  const texts = opts.overlays.filter(
+    (o): o is TextOverlay => o.type === "text" && !!(o.text && o.text.trim())
+  );
+
+  const inputArgs: string[] = ["-i", inputName];
+  const logoFiles: string[] = [];
 
   // Write logo files & add as inputs
   for (let i = 0; i < logos.length; i++) {
     const logo = logos[i];
-    const blob = await (await fetch(logo.src)).blob();
-    const ext = (blob.type.split("/")[1] || "png").replace(/[^\w]/g, "");
-    const name = `logo_${i}.${ext}`;
-    await ff.writeFile(name, new Uint8Array(await blob.arrayBuffer()));
-    inputs.push("-i", name);
+    try {
+      const resp = await fetch(logo.src);
+      const blob = await resp.blob();
+      const mimeExt = (blob.type.split("/")[1] || "png").replace(/[^\w]/g, "").slice(0, 4) || "png";
+      const name = `logo_${i}_${stamp}.${mimeExt}`;
+      await ff.writeFile(name, new Uint8Array(await blob.arrayBuffer()));
+      inputArgs.push("-i", name);
+      logoFiles.push(name);
+    } catch (err) {
+      console.warn("[ffmpeg] skipping logo, could not read src:", err);
+    }
   }
+
+  const usableLogos = logos.slice(0, logoFiles.length);
 
   // Build filter graph
   const filters: string[] = [];
   const h = qualityHeight(opts.quality);
-  let lastLabel = "[0:v]";
+  let lastLabel = "0:v";
 
   if (h) {
-    filters.push(`[0:v]scale=-2:${h}:flags=lanczos[v0]`);
-    lastLabel = "[v0]";
+    // Ensure even dimensions for yuv420p
+    filters.push(`[${lastLabel}]scale=-2:${h}:flags=lanczos,format=yuv420p[vbase]`);
+    lastLabel = "vbase";
   }
 
-  // Logo overlays
-  logos.forEach((logo, i) => {
-    const inIdx = i + 1; // input index
-    const lgIn = `[${inIdx}:v]`;
-    const lgOut = `[lg${i}]`;
+  // Logo overlays via scale2ref (main is the video, ref is the video too)
+  usableLogos.forEach((logo, i) => {
+    const logoIn = `${i + 1}:v`;
+    const widthPct = Math.max(0.01, Math.min(1, logo.width / 100));
+    const opacity = Math.max(0, Math.min(1, logo.opacity));
+    const xPct = Math.max(0, Math.min(1, logo.x / 100));
+    const yPct = Math.max(0, Math.min(1, logo.y / 100));
+
+    // Apply opacity to logo
+    filters.push(`[${logoIn}]format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[lgA${i}]`);
+    // Scale logo relative to the main video using scale2ref
+    // scale2ref: [in][ref] => [out_scaled][ref_pass]
     filters.push(
-      `${lgIn}scale=iw*${(logo.width / 100).toFixed(4)}*main_w/iw:-1,format=rgba,colorchannelmixer=aa=${logo.opacity.toFixed(2)}${lgOut}`
+      `[lgA${i}][${lastLabel}]scale2ref=w='main_w*${widthPct.toFixed(4)}':h='ow/mdar'[lgS${i}][vref${i}]`
     );
-    // Simpler: scale logo to (main_w * pct/100) — use scale2ref or compute via overlay
-    // The expression above is fragile because main_w isn't available in scale filter.
-    // Use scale2ref instead:
-    filters.pop();
-    const ref = `[ref${i}]`;
-    filters.push(`${lgIn}format=rgba,colorchannelmixer=aa=${logo.opacity.toFixed(2)}[lgA${i}]`);
-    filters.push(`[lgA${i}]${lastLabel}scale2ref=w='main_w*${(logo.width / 100).toFixed(4)}':h='ow/mdar'[lgS${i}]${ref}`);
-    const nextLabel = `[v${i + 1}]`;
-    filters.push(`${ref}[lgS${i}]overlay=x='main_w*${(logo.x / 100).toFixed(4)}':y='main_h*${(logo.y / 100).toFixed(4)}'${nextLabel}`);
+    const nextLabel = `vo${i}`;
+    filters.push(
+      `[vref${i}][lgS${i}]overlay=x='(W-w)*${xPct.toFixed(4)}':y='(H-h)*${yPct.toFixed(4)}':format=auto[${nextLabel}]`
+    );
     lastLabel = nextLabel;
   });
 
   // Text overlays
   texts.forEach((t, i) => {
-    const txt = escapeDrawtext(t.text || "");
-    if (!txt) return;
-    const color = hexToFfmpegColor(t.color || "#ffffff", t.opacity);
+    const txt = escapeDrawtext(t.text);
+    const color = hexToFfmpegColor(t.color, t.opacity);
     const box = t.background ? `:box=1:boxcolor=0x000000@0.5:boxborderw=10` : "";
-    const fontsize = `h*${(t.size / 100).toFixed(4)}`;
-    const x = `w*${(t.x / 100).toFixed(4)}`;
-    const y = `h*${(t.y / 100).toFixed(4)}`;
-    const nextLabel = `[t${i + 1}]`;
+    const size = Math.max(0.01, Math.min(1, t.size / 100));
+    const xPct = Math.max(0, Math.min(1, t.x / 100));
+    const yPct = Math.max(0, Math.min(1, t.y / 100));
+    const nextLabel = `vt${i}`;
     filters.push(
-      `${lastLabel}drawtext=fontfile=inter.ttf:text='${txt}':fontsize=${fontsize}:fontcolor=${color}:x=${x}:y=${y}${box}${nextLabel}`
+      `[${lastLabel}]drawtext=fontfile=inter.ttf:text='${txt}':fontsize='h*${size.toFixed(4)}':fontcolor=${color}:x='(w-text_w)*${xPct.toFixed(4)}':y='(h-text_h)*${yPct.toFixed(4)}'${box}[${nextLabel}]`
     );
     lastLabel = nextLabel;
   });
 
-  const args: string[] = [...inputs];
+  const args: string[] = [...inputArgs];
   if (filters.length > 0) {
-    args.push("-filter_complex", filters.join(";"), "-map", lastLabel, "-map", "0:a?");
+    args.push("-filter_complex", filters.join(";"), "-map", `[${lastLabel}]`, "-map", "0:a?");
+  } else {
+    args.push("-map", "0:v", "-map", "0:a?");
   }
   args.push(
     "-c:v", "libx264",
@@ -141,14 +171,29 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
   );
 
   const progressHandler = ({ progress }: { progress: number }) => {
-    opts.onProgress?.(Math.min(0.99, Math.max(0, progress)));
+    if (Number.isFinite(progress)) {
+      opts.onProgress?.(Math.min(0.99, Math.max(0, progress)));
+    }
   };
   ff.on("progress", progressHandler);
 
+  // Snapshot log length so we can grab lines from this run only
+  const logStart = recentLogs.length;
+  let exitCode: number | undefined;
   try {
-    await ff.exec(args);
+    exitCode = await ff.exec(args);
+  } catch (err) {
+    const tail = recentLogs.slice(Math.max(0, logStart - 5)).join("\n");
+    console.error("[ffmpeg] exec threw:", err, "\nargs:", args, "\nlogs:\n", tail);
+    throw new Error(extractFfmpegError(tail) || (err instanceof Error ? err.message : "Falha ao processar vídeo"));
   } finally {
     ff.off("progress", progressHandler);
+  }
+
+  if (typeof exitCode === "number" && exitCode !== 0) {
+    const tail = recentLogs.slice(Math.max(0, logStart - 5)).join("\n");
+    console.error("[ffmpeg] non-zero exit:", exitCode, "\nargs:", args, "\nlogs:\n", tail);
+    throw new Error(extractFfmpegError(tail) || `FFmpeg saiu com código ${exitCode}`);
   }
 
   const data = await ff.readFile(outputName);
@@ -159,10 +204,23 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
   // Cleanup
   try { await ff.deleteFile(inputName); } catch {}
   try { await ff.deleteFile(outputName); } catch {}
-  for (let i = 0; i < logos.length; i++) {
-    try { await ff.deleteFile(`logo_${i}.png`); } catch {}
+  for (const name of logoFiles) {
+    try { await ff.deleteFile(name); } catch {}
   }
 
   opts.onProgress?.(1);
   return blob;
+}
+
+function extractFfmpegError(logs: string): string | null {
+  if (!logs) return null;
+  const lines = logs.split("\n").filter(Boolean);
+  // Look for the last obviously-error-ish line
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (/error|invalid|failed|no such|unable/i.test(l)) {
+      return l.trim().slice(0, 240);
+    }
+  }
+  return lines.slice(-2).join(" | ").slice(0, 240) || null;
 }
