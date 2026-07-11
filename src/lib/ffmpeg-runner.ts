@@ -9,6 +9,7 @@ const LOCAL_CORE_URL = "/ffmpeg/ffmpeg-core.js";
 const WASM_ASSET_MANIFEST_URL = "/ffmpeg/ffmpeg-core.wasm.asset.json";
 const REMOTE_CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
 const LOAD_TIMEOUT_MS = 45_000;
+const EXEC_TIMEOUT_MS = 120_000;
 
 // Ring buffer for recent ffmpeg log lines (useful when exec throws generic errors)
 const recentLogs: string[] = [];
@@ -34,7 +35,12 @@ export async function getFFmpeg(): Promise<FFmpeg> {
     }
     ffmpegInstance = ff;
     return ff;
-  })();
+  })().catch((err) => {
+    ffmpegInstance?.terminate();
+    ffmpegInstance = null;
+    loadingPromise = null;
+    throw normalizeLoadError(err);
+  });
 
   return loadingPromise;
 }
@@ -62,6 +68,16 @@ async function loadCore(ff: FFmpeg): Promise<void> {
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function normalizeLoadError(err: unknown): Error {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    return new Error(
+      "O FFmpeg demorou demais para carregar. Recarregue a página e tente novamente; se persistir, use Chrome/Edge e um vídeo menor."
+    );
+  }
+  if (err instanceof Error) return err;
+  return new Error("Falha ao carregar o motor de vídeo FFmpeg.");
 }
 
 async function getLocalWasmURL(): Promise<string> {
@@ -214,11 +230,12 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
   const logStart = recentLogs.length;
   let exitCode: number | undefined;
   try {
-    exitCode = await ff.exec(args);
+    exitCode = await ff.exec(args, EXEC_TIMEOUT_MS);
   } catch (err) {
     const tail = recentLogs.slice(Math.max(0, logStart - 5)).join("\n");
     console.error("[ffmpeg] exec threw:", err, "\nargs:", args, "\nlogs:\n", tail);
-    throw new Error(extractFfmpegError(tail) || (err instanceof Error ? err.message : "Falha ao processar vídeo"));
+    resetFFmpeg();
+    throw new Error(extractFfmpegError(tail) || normalizeExecError(err));
   } finally {
     ff.off("progress", progressHandler);
   }
@@ -226,6 +243,7 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
   if (typeof exitCode === "number" && exitCode !== 0) {
     const tail = recentLogs.slice(Math.max(0, logStart - 5)).join("\n");
     console.error("[ffmpeg] non-zero exit:", exitCode, "\nargs:", args, "\nlogs:\n", tail);
+    if (exitCode === 1) resetFFmpeg();
     throw new Error(extractFfmpegError(tail) || `FFmpeg saiu com código ${exitCode}`);
   }
 
@@ -243,6 +261,22 @@ export async function processVideo(file: File, opts: ProcessOptions): Promise<Bl
 
   opts.onProgress?.(1);
   return blob;
+}
+
+function resetFFmpeg(): void {
+  ffmpegInstance?.terminate();
+  ffmpegInstance = null;
+  loadingPromise = null;
+}
+
+function normalizeExecError(err: unknown): string {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    return "O processamento demorou demais e foi interrompido. Tente qualidade Original/720p ou um vídeo menor.";
+  }
+  if (typeof err === "string" && err.includes("timeout")) {
+    return "O processamento excedeu o tempo limite. Tente qualidade Original/720p ou um vídeo menor.";
+  }
+  return err instanceof Error ? err.message : "Falha ao processar vídeo";
 }
 
 function extractFfmpegError(logs: string): string | null {
