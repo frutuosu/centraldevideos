@@ -69,7 +69,7 @@ async function getLocalWasmURL(): Promise<string> {
   if (!response.ok) throw new Error("Manifesto local do FFmpeg não encontrado");
   const manifest = (await response.json()) as { url?: string };
   if (!manifest.url) throw new Error("Manifesto local do FFmpeg sem URL do Wasm");
-  return manifest.url;
+  return new URL(manifest.url, window.location.origin).href;
 }
 
 /** Escape text for drawtext filter */
