@@ -138,6 +138,7 @@ function bitrateFor(width: number, height: number): number {
 }
 
 function seek(video: HTMLVideoElement, time: number): Promise<void> {
+  if (Math.abs(video.currentTime - time) < 0.01) return Promise.resolve();
   return new Promise((resolve, reject) => {
     video.onseeked = () => resolve();
     video.onerror = () => reject(new Error("Falha ao preparar o vídeo para renderização."));
